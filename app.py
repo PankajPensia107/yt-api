@@ -1,17 +1,8 @@
 from fastapi import FastAPI
 from youtube_transcript_api import YouTubeTranscriptApi
-import random
+from youtube_transcript_api.proxies import WebshareProxyConfig
 
 app = FastAPI()
-
-# 🔁 Your proxy list
-proxies_list = [
-    "http://ccaiclkg:mbnuts1y31oi@31.59.20.176:6754",
-    "http://ccaiclkg:mbnuts1y31oi@23.95.150.145:6114",
-    "http://ccaiclkg:mbnuts1y31oi@198.23.239.134:6540",
-    "http://ccaiclkg:mbnuts1y31oi@45.38.107.97:6014",
-    "http://ccaiclkg:mbnuts1y31oi@107.172.163.27:6543",
-]
 
 @app.get("/")
 def home():
@@ -19,34 +10,22 @@ def home():
 
 @app.get("/summary")
 def get_summary(video_id: str):
-    last_error = None
-
-    # 🔁 Try multiple proxies
-    for i in range(5):
-        proxy = random.choice(proxies_list)
-
-        try:
-            api = YouTubeTranscriptApi(
-                proxies={
-                    "http": proxy,
-                    "https": proxy,
-                }
+    try:
+        api = YouTubeTranscriptApi(
+            proxy_config=WebshareProxyConfig(
+                proxy_username="ccaiclkg",
+                proxy_password="mbnuts1y31oi",
             )
+        )
 
-            transcript = api.fetch(video_id)
-            text = " ".join([x.text for x in transcript])
+        transcript = api.fetch(video_id)
 
-            return {
-                "video_id": video_id,
-                "proxy_used": proxy,
-                "summary": text[:500]
-            }
+        text = " ".join([x.text for x in transcript])
 
-        except Exception as e:
-            last_error = str(e)
-            continue
+        return {
+            "video_id": video_id,
+            "summary": text[:500]
+        }
 
-    return {
-        "error": "All proxies failed",
-        "details": last_error
-    }
+    except Exception as e:
+        return {"error": str(e)}
