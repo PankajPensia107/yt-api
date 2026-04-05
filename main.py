@@ -26,39 +26,42 @@ app.add_middleware(
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Default config: PSM 3 paragraph reading ke liye better hai PSM 6 se
+# PSM 3: Automatic page segmentation (Better for paragraphs/bills)
 OCR_CONFIG = "--oem 3 --psm 3"
 
-# ---------- IMAGE PREPROCESSING (Improved) ----------
-def preprocess_image(file_path):
-    img = cv2.imread(file_path)
-    if img is None: return None
-    
-    # Image ko grayscale karna
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Adaptive Thresholding: Ye low light/shadowy photos ke liye best hai
+# ---------- IMAGE PREPROCESSING (Advanced) ----------
+def get_processed_image(img_array):
+    # 1. Grayscale conversion
+    gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
+
+    # 2. Resizing (Upscaling): Image ko 2 guna bada karna (Blurry text fix)
+    # Tesseract ko bade letters zyada pasand hain
+    height, width = gray.shape[:2]
+    gray = cv2.resize(gray, (width * 2, height * 2), interpolation=cv2.INTER_CUBIC)
+
+    # 3. Denoising: Grains aur dots saaf karna
+    # h=10: Filter strength (zyada badhane se text gayab ho sakta hai)
+    denoised = cv2.fastNlMeansDenoising(gray, h=10, templateWindowSize=7, searchWindowSize=21)
+
+    # 4. Adaptive Thresholding: Contrast badhana (Black text on White background)
     thresh = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 11, 2
+        denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY, 31, 2
     )
-    
-    # Noise kam karna bina text kharab kiye
-    kernel = np.ones((1, 1), np.uint8)
-    processed = cv2.dilate(thresh, kernel, iterations=1)
-    processed = cv2.erode(processed, kernel, iterations=1)
-    
-    return processed
+
+    return thresh
 
 def extract_from_image(file_path, lang):
-    processed = preprocess_image(file_path)
-    if processed is None: return "Error: Image not readable"
+    img = cv2.imread(file_path)
+    if img is None: return "Error: Image not readable"
     
+    processed = get_processed_image(img)
     return pytesseract.image_to_string(processed, lang=lang, config=OCR_CONFIG)
 
 # ---------- PDF ----------
 def extract_from_pdf(file_path, lang):
     text = ""
+    # Try direct text extraction
     try:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
@@ -66,17 +69,22 @@ def extract_from_pdf(file_path, lang):
                 if t: text += t + "\n"
     except: pass
 
+    # If Scanned PDF -> OCR with Preprocessing
     if not text.strip():
-        # Scanned PDF ke liye DPI 150 (Balance between quality and RAM)
-        images = convert_from_path(file_path, dpi=150)
+        # DPI 200: Clarity ke liye zaroori hai (RAM check)
+        images = convert_from_path(file_path, dpi=200)
         for img in images:
-            text += pytesseract.image_to_string(img, lang=lang, config=OCR_CONFIG)
+            img_np = np.array(img)
+            img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            processed = get_processed_image(img_cv)
+            text += pytesseract.image_to_string(processed, lang=lang, config=OCR_CONFIG)
     return text
 
 # ---------- BACKGROUND TASK ----------
 def process_file_async(file_path, ext, task_id, lang):
     try:
-        if ext in ["jpg", "jpeg", "png", "bmp", "gif", "webp"]:
+        text = ""
+        if ext in ["jpg", "jpeg", "png", "bmp", "webp"]:
             text = extract_from_image(file_path, lang)
         elif ext == "pdf":
             text = extract_from_pdf(file_path, lang)
@@ -86,9 +94,13 @@ def process_file_async(file_path, ext, task_id, lang):
         else:
             text = "Unsupported file type"
 
+        # Cleaning: Faltu symbols hatane ke liye basic cleanup (Optional)
+        # text = "".join([c for c in text if c.isalnum() or c in " \n.,-:@/"])
+
         result_path = os.path.join(UPLOAD_DIR, f"{task_id}.txt")
         with open(result_path, "w", encoding="utf-8") as f:
-            f.write(text)
+            f.write(text.strip())
+
     except Exception as e:
         with open(os.path.join(UPLOAD_DIR, f"{task_id}.txt"), "w", encoding="utf-8") as f:
             f.write(f"Error: {str(e)}")
@@ -101,27 +113,24 @@ def process_file_async(file_path, ext, task_id, lang):
 @app.post("/extract")
 async def extract(
     file: UploadFile = File(...), 
-    lang: str = Form("eng"), # Default language English rakhi hai
+    lang: str = Form("eng"), # Default English
     background_tasks: BackgroundTasks = None
 ):
     task_id = str(uuid.uuid4())
     ext = file.filename.split(".")[-1].lower()
     file_path = os.path.join(UPLOAD_DIR, f"{task_id}_{file.filename}")
 
-    # Language validation (Sirf wahi lang jo installed hain)
+    # Validating lang parameter
     valid_langs = ["eng", "hin", "pan", "eng+hin", "eng+pan", "eng+hin+pan"]
     if lang not in valid_langs:
-        lang = "eng" # Fallback to English
+        lang = "eng"
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     background_tasks.add_task(process_file_async, file_path, ext, task_id, lang)
     
-    return {
-        "task_id": task_id,
-        "status": "processing"
-    }
+    return {"task_id": task_id, "status": "processing"}
 
 @app.get("/result/{task_id}")
 async def get_result(task_id: str):
@@ -133,7 +142,4 @@ async def get_result(task_id: str):
     with open(result_file, "r", encoding="utf-8") as f:
         data = f.read()
     
-    return {
-        "status": "completed",
-        "text": data
-    }
+    return {"status": "completed", "text": data}
