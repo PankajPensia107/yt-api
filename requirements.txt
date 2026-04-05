@@ -6,6 +6,5 @@ Pillow
 pdfplumber
 pdf2image
 python-docx
-textract
 opencv-python-headless
 numpy
