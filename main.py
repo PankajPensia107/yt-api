@@ -1,20 +1,14 @@
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import shutil
-import os
-import uuid
-import pytesseract
-from PIL import Image
-import pdfplumber
+import shutil, os, uuid, pytesseract, pdfplumber, cv2, re
+import numpy as np
 from pdf2image import convert_from_path
 from docx import Document
-import cv2
-import numpy as np
 
 app = FastAPI()
 
-# ---------- CORS SETTINGS ----------
+# CORS Fix
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -26,42 +20,53 @@ app.add_middleware(
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# PSM 3: Automatic page segmentation (Better for paragraphs/bills)
+# English Only Configuration
+# PSM 3: Automatic page segmentation (Standard for documents)
+# OEM 3: Default OCR Engine mode
 OCR_CONFIG = "--oem 3 --psm 3"
+LANG = "eng" # Sirf English rakha hai abhi
 
-# ---------- IMAGE PREPROCESSING (Advanced) ----------
 def get_processed_image(img_array):
-    # 1. Grayscale conversion
+    # 1. Grayscale
     gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
 
-    # 2. Resizing (Upscaling): Image ko 2 guna bada karna (Blurry text fix)
-    # Tesseract ko bade letters zyada pasand hain
-    height, width = gray.shape[:2]
-    gray = cv2.resize(gray, (width * 2, height * 2), interpolation=cv2.INTER_CUBIC)
+    # 2. Resizing (1.5x for clarity without crashing Render RAM)
+    gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_LANCZOS4)
 
-    # 3. Denoising: Grains aur dots saaf karna
-    # h=10: Filter strength (zyada badhane se text gayab ho sakta hai)
-    denoised = cv2.fastNlMeansDenoising(gray, h=10, templateWindowSize=7, searchWindowSize=21)
+    # 3. Denoising: Bilateral filter edges (letters) ko sharp rakhta hai
+    gray = cv2.bilateralFilter(gray, 9, 75, 75)
 
-    # 4. Adaptive Thresholding: Contrast badhana (Black text on White background)
-    thresh = cv2.adaptiveThreshold(
-        denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 31, 2
-    )
+    # 4. Binary Thresholding: Pure Black & White (Otsu method)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    return thresh
+    # 5. Morphological Cleaning: Chote dots aur noise hatane ke liye
+    kernel = np.ones((1,1), np.uint8)
+    processed = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
-def extract_from_image(file_path, lang):
+    return processed
+
+def clean_text(text):
+    """Faltu symbols aur extra spaces hatane ke liye post-processing"""
+    # 1. Faltu symbols like |, _, ~, ^, etc. ko delete karo
+    text = re.sub(r'[|\\_~^]', '', text)
+    # 2. Extra spaces aur newlines ko manage karo
+    text = re.sub(r' +', ' ', text)
+    # 3. Double words ko single karo (Optional, but helps with blurring errors)
+    # text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text, flags=re.IGNORECASE)
+    return text.strip()
+
+def extract_from_image(file_path):
     img = cv2.imread(file_path)
     if img is None: return "Error: Image not readable"
     
     processed = get_processed_image(img)
-    return pytesseract.image_to_string(processed, lang=lang, config=OCR_CONFIG)
+    raw_text = pytesseract.image_to_string(processed, lang=LANG, config=OCR_CONFIG)
+    
+    return clean_text(raw_text)
 
-# ---------- PDF ----------
-def extract_from_pdf(file_path, lang):
+def extract_from_pdf(file_path):
     text = ""
-    # Try direct text extraction
+    # Text-based PDF extraction
     try:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
@@ -69,73 +74,56 @@ def extract_from_pdf(file_path, lang):
                 if t: text += t + "\n"
     except: pass
 
-    # If Scanned PDF -> OCR with Preprocessing
+    # Scanned PDF logic
     if not text.strip():
-        # DPI 200: Clarity ke liye zaroori hai (RAM check)
         images = convert_from_path(file_path, dpi=200)
         for img in images:
-            img_np = np.array(img)
-            img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
             processed = get_processed_image(img_cv)
-            text += pytesseract.image_to_string(processed, lang=lang, config=OCR_CONFIG)
+            raw_text = pytesseract.image_to_string(processed, lang=LANG, config=OCR_CONFIG)
+            text += clean_text(raw_text) + "\n"
     return text
 
 # ---------- BACKGROUND TASK ----------
-def process_file_async(file_path, ext, task_id, lang):
+def process_file_async(file_path, ext, task_id):
     try:
-        text = ""
         if ext in ["jpg", "jpeg", "png", "bmp", "webp"]:
-            text = extract_from_image(file_path, lang)
+            text = extract_from_image(file_path)
         elif ext == "pdf":
-            text = extract_from_pdf(file_path, lang)
+            text = extract_from_pdf(file_path)
         elif ext == "docx":
             doc = Document(file_path)
             text = "\n".join([p.text for p in doc.paragraphs])
         else:
             text = "Unsupported file type"
 
-        # Cleaning: Faltu symbols hatane ke liye basic cleanup (Optional)
-        # text = "".join([c for c in text if c.isalnum() or c in " \n.,-:@/"])
-
         result_path = os.path.join(UPLOAD_DIR, f"{task_id}.txt")
         with open(result_path, "w", encoding="utf-8") as f:
-            f.write(text.strip())
-
+            f.write(text)
     except Exception as e:
         with open(os.path.join(UPLOAD_DIR, f"{task_id}.txt"), "w", encoding="utf-8") as f:
             f.write(f"Error: {str(e)}")
     finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if os.path.exists(file_path): os.remove(file_path)
 
 # ---------- API ENDPOINTS ----------
 
 @app.post("/extract")
-async def extract(
-    file: UploadFile = File(...), 
-    lang: str = Form("eng"), # Default English
-    background_tasks: BackgroundTasks = None
-):
+async def extract(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
     task_id = str(uuid.uuid4())
     ext = file.filename.split(".")[-1].lower()
     file_path = os.path.join(UPLOAD_DIR, f"{task_id}_{file.filename}")
-
-    # Validating lang parameter
-    valid_langs = ["eng", "hin", "pan", "eng+hin", "eng+pan", "eng+hin+pan"]
-    if lang not in valid_langs:
-        lang = "eng"
-
+    
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    background_tasks.add_task(process_file_async, file_path, ext, task_id, lang)
+    background_tasks.add_task(process_file_async, file_path, ext, task_id)
     
     return {"task_id": task_id, "status": "processing"}
 
 @app.get("/result/{task_id}")
 async def get_result(task_id: str):
     result_file = os.path.join(UPLOAD_DIR, f"{task_id}.txt")
-    
     if not os.path.exists(result_file):
         return {"status": "processing"}
 
