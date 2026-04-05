@@ -2,7 +2,7 @@
 FROM python:3.10-slim
 
 # System dependencies install karna (Tesseract, Poppler, OpenCV support)
-# System dependencies install karna (With Fix for Exit Code 100)
+# System dependencies install karna (Robust Version)
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
     tesseract-ocr \
@@ -12,6 +12,8 @@ RUN apt-get update --fix-missing && \
     poppler-utils \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    || (sleep 5 && apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr tesseract-ocr-hin tesseract-ocr-pan libtesseract-dev poppler-utils libgl1-mesa-glx libglib2.0-0) \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
