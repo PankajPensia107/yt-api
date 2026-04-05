@@ -1,5 +1,11 @@
 fastapi
 uvicorn
-pillow
-pytesseract
 python-multipart
+pytesseract
+Pillow
+pdfplumber
+pdf2image
+python-docx
+textract
+opencv-python-headless
+numpy
