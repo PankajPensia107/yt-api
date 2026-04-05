@@ -1,19 +1,33 @@
+# Python base image
 FROM python:3.10-slim
 
-# Install Tesseract OCR
-RUN apt-get update && apt-get install -y tesseract-ocr
+# System dependencies install karna (Tesseract, Poppler, OpenCV support)
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-hin \
+    tesseract-ocr-pan \
+    libtesseract-dev \
+    poppler-utils \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Work directory set karna
 WORKDIR /app
 
-# Copy all files
-COPY . /app
-
-# Install Python dependencies
+# Requirements copy aur install karna
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose port
-EXPOSE 10000
+# Baaki saara code copy karna
+COPY . .
 
-# Run FastAPI app
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+# Upload directory banana
+RUN mkdir -p uploads
+
+# Port expose karna
+EXPOSE 8000
+
+# App run karne ki command
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
