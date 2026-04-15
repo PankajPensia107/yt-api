@@ -23,8 +23,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # English Only Configuration
 # PSM 3: Automatic page segmentation (Standard for documents)
 # OEM 3: Default OCR Engine mode
-OCR_CONFIG = "--oem 3 --psm 3"
-LANG = "eng" # Sirf English rakha hai abhi
+OCR_CONFIG = "--oem 3 --psm 6"
+LANG = "eng+hin" # Sirf English rakha hai abhi
 
 def get_processed_image(img_array):
     # 1. Grayscale
