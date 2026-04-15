@@ -2,7 +2,11 @@ services:
   - type: web
     name: ocr-api
     env: python
+    plan: free
     buildCommand: |
-      apt-get update && apt-get install -y tesseract-ocr
+      apt-get update
+      apt-get install -y tesseract-ocr
+      apt-get install -y tesseract-ocr-hin
+      apt-get install -y poppler-utils
       pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
